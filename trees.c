@@ -121,8 +121,41 @@
    defines off_t and then while other files are using an 8-byte off_t this
    file gets a 4-byte off_t.  Once zip.h sets the large file defines can
    then include ctype.h and get 8-byte off_t.  8/14/04 EG */
+
+#include <openssl/sha.h>
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <openssl/buffer.h>
 #include "zip.h"
 #include <ctype.h>
+
+int Base64Encode(const unsigned char* buffer, size_t length, char** b64text) { //Encodes a binary safe base 64 string
+	BIO *bio, *b64;
+	BUF_MEM *bufferPtr;
+
+	b64 = BIO_new(BIO_f_base64());
+	bio = BIO_new(BIO_s_mem());
+	bio = BIO_push(b64, bio);
+
+	BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL); //Ignore newlines - write everything in one line
+	BIO_write(bio, buffer, length);
+	BIO_flush(bio);
+	BIO_get_mem_ptr(bio, &bufferPtr);
+	BIO_set_close(bio, BIO_NOCLOSE);
+	BIO_free_all(bio);
+
+	*b64text=(*bufferPtr).data;
+	(*b64text)[bufferPtr->length] = 0;
+	return (0); //success
+}
+void
+compute_hash(const unsigned char *data, size_t len, unsigned char hash[SHA256_DIGEST_LENGTH])
+{
+   SHA256_CTX sha256;
+   SHA256_Init(&sha256);
+   SHA256_Update(&sha256, data, len);
+   SHA256_Final(hash, &sha256);
+}
 
 #ifndef USE_ZLIB
 
@@ -384,6 +417,7 @@ char *out_buf;
 
 #if (!defined(ASMV) || !defined(RISCOS))
 local unsigned out_offset;
+unsigned absolute_offset;
 #else
 unsigned out_offset;
 #endif
@@ -404,12 +438,14 @@ unsigned out_size;
     flush_outbuf(out_buf, &out_offset); \
   out_buf[out_offset++] = (char) ((w) & 0xff); \
   out_buf[out_offset++] = (char) ((ush)(w) >> 8); \
+  absolute_offset+=2; \
 }
 
 #define PUTBYTE(b) \
 { if (out_offset >= out_size) \
     flush_outbuf(out_buf, &out_offset); \
   out_buf[out_offset++] = (char) (b); \
+  absolute_offset++; \
 }
 
 #ifdef DEBUG
@@ -1018,6 +1054,8 @@ uzoff_t flush_block(buf, stored_len, eof)
 {
     ulg opt_lenb, static_lenb; /* opt_len and static_len in bytes */
     int max_blindex;  /* index of last bit length code of non zero freq */
+	unsigned char hash[SHA256_DIGEST_LENGTH];
+	char *b64hash;
 
     flag_buf[last_flags] = flags; /* Save the flags for the last 8 items */
 
@@ -1045,6 +1083,13 @@ uzoff_t flush_block(buf, stored_len, eof)
 #ifdef DEBUG
     input_len += stored_len; /* for debugging only */
 #endif
+
+	if (buf != NULL){
+		compute_hash(buf, stored_len, hash);
+		Base64Encode(hash, SHA256_DIGEST_LENGTH, &b64hash);
+		fprintf(stderr, "<Block Hash=\"%s\" ", b64hash);
+	}
+	int start_off = absolute_offset;
 
     Trace((stderr, "\nopt %lu(%lu) stat %lu(%lu) stored %lu lit %u dist %u ",
             opt_lenb, opt_len, static_lenb, static_len, stored_len,
@@ -1089,8 +1134,7 @@ uzoff_t flush_block(buf, stored_len, eof)
         send_bits((STORED_BLOCK<<1)+eof, 3);  /* send block type */
         cmpr_bytelen += ((cmpr_len_bits + 3 + 7) >> 3) + stored_len + 4;
         cmpr_len_bits = 0L;
-
-        copy_block(buf, (unsigned)stored_len, 1); /* with header */
+		copy_block(buf, (unsigned)stored_len, 1); /* with header */
 
 #ifdef FORCE_METHOD
     } else if (level == 3) { /* force static trees */
@@ -1110,6 +1154,9 @@ uzoff_t flush_block(buf, stored_len, eof)
         cmpr_bytelen += cmpr_len_bits >> 3;
         cmpr_len_bits &= 7L;
     }
+	if (buf)
+		fprintf(stderr, "Size=\"%d\" />\n", absolute_offset - start_off);
+
     Assert(((cmpr_bytelen << 3) + cmpr_len_bits) == bits_sent,
             "bad compressed size");
     init_block();
@@ -1306,6 +1353,7 @@ void bi_init (tgt_buf, tgt_size, flsh_allowed)
     out_buf = tgt_buf;
     out_size = tgt_size;
     out_offset = 0;
+	absolute_offset = 0;
     flush_flg = flsh_allowed;
 
     bi_buf = 0;
@@ -1428,7 +1476,6 @@ local void copy_block(block, len, header)
     int header;   /* true if block header must be written */
 {
     bi_windup();              /* align on byte boundary */
-
     if (header) {
         PUTSHORT((ush)len);
         PUTSHORT((ush)~len);
@@ -1449,6 +1496,7 @@ local void copy_block(block, len, header)
                 out_offset = (len < out_size ? len : out_size);
                 memcpy(out_buf, block, out_offset);
                 block += out_offset;
+				absolute_offset += out_offset;
                 len -= out_offset;
                 flush_outbuf(out_buf, &out_offset);
             }
@@ -1458,6 +1506,7 @@ local void copy_block(block, len, header)
              * operation.
              */
             out_offset = len;
+			absolute_offset += len;
             flush_outbuf(block, &out_offset);
         }
     } else if (out_offset + len > out_size) {
@@ -1465,6 +1514,7 @@ local void copy_block(block, len, header)
     } else {
         memcpy(out_buf + out_offset, block, len);
         out_offset += len;
+		absolute_offset += len;
     }
 #ifdef DEBUG
     bits_sent += (ulg)len<<3;

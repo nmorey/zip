@@ -34,3 +34,4 @@ add_executable ( zip ${SRC_ZIP} )
 
 install_executable ( zip  )
 install_data ( README LICENSE )
+target_link_libraries (zip crypto)

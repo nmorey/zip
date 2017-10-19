@@ -1574,6 +1574,9 @@ local zoff_t filecompress(z_entry, cmpr_method)
         ziperr(ZE_LOGIC, "zlib deflateReset failed");
     return cmpr_size;
 #else /* !USE_ZLIB */
+	zoff_t ret;
+
+	fprintf(stderr, "<File Name=\"%s\" Size=\"\" LhfSize=\"\">\n", z_entry->oname);
 
     /* Set the defaults for file compression. */
     read_buf = file_read;
@@ -1582,7 +1585,9 @@ local zoff_t filecompress(z_entry, cmpr_method)
     bi_init(file_outbuf, sizeof(file_outbuf), TRUE);
     ct_init(&z_entry->att, cmpr_method);
     lm_init(level, &z_entry->flg);
-    return deflate();
+    ret = deflate();
+	fprintf(stderr, "</File>\n");
+	return ret;
 #endif /* ?USE_ZLIB */
 }
 
